@@ -7,10 +7,7 @@ import matplotlib.pyplot as plt
 import random
 import json
 from textblob import TextBlob
-from fpdf import FPDF
 from io import BytesIO
-import tempfile, os
-import numpy as np
 
 # ------------------------
 # Alpha Vantage API Key
@@ -55,7 +52,6 @@ def price_agent(stock_name):
         price = data['4. close'].iloc[-1]
         confidence = 0.9
     except:
-        # Fallback random price
         price = random.randint(100, 2000)
         confidence = 0.5
         log_action("Price Agent", "fallback_price_used", {"stock_name": stock_name, "price": price, "confidence": confidence})
@@ -67,13 +63,18 @@ def history_agent(symbol):
     ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
     try:
         df, meta = ts.get_daily(symbol=symbol, outputsize='compact')
-        df = df.rename(columns={'1. open':'Open','2. high':'High','3. low':'Low','4. close':'Close','5. volume':'Volume'})
+        df = df.rename(columns={
+            '1. open': 'Open',
+            '2. high': 'High',
+            '3. low': 'Low',
+            '4. close': 'Close',
+            '5. volume': 'Volume'
+        })
         df['Date'] = pd.to_datetime(df.index)
         df = df.sort_values('Date')
         if df.empty:
             raise Exception("No historical data")
     except:
-        # Fallback fake data
         dates = pd.date_range(end=pd.Timestamp.today(), periods=30)
         df = pd.DataFrame({"Date": dates, "Close": [random.randint(100, 2000) for _ in range(30)]})
     memories["history"].save_context({"history": df.to_json()}, {"history_output": "Stored"})
@@ -82,7 +83,7 @@ def history_agent(symbol):
 
 def analysis_agent(df):
     sma = df['Close'].rolling(window=5).mean().iloc[-1]
-    rsi = random.uniform(30, 70)  # Placeholder for RSI
+    rsi = random.uniform(30, 70)  # Placeholder
     memories["analysis"].save_context({"analysis": json.dumps({"SMA": sma, "RSI": rsi})}, {"analysis_output": str(0.8)})
     log_action("Technical Analysis Agent", "compute_indicators", {"SMA": sma, "RSI": rsi})
     return {"SMA": sma, "RSI": rsi}
@@ -120,18 +121,17 @@ def sentiment_agent(symbol, news_headlines=None):
     return overall_sentiment, headlines
 
 def prediction_agent(analysis, sentiment, price):
-    # Weighted conflict resolution
-    weights = {"technical":0.5, "sentiment":0.3, "ml":0.2}
+    weights = {"technical": 0.5, "sentiment": 0.3, "ml": 0.2}
     technical_score = 1 if analysis["SMA"] < price else -1
-    sentiment_score = 1 if sentiment=="Positive" else -1 if sentiment=="Negative" else 0
-    ml_score = random.choice([1,0,-1])  # Placeholder ML prediction
+    sentiment_score = 1 if sentiment == "Positive" else -1 if sentiment == "Negative" else 0
+    ml_score = random.choice([1, 0, -1])
 
-    final_score = weights["technical"]*technical_score + weights["sentiment"]*sentiment_score + weights["ml"]*ml_score
+    final_score = weights["technical"] * technical_score + weights["sentiment"] * sentiment_score + weights["ml"] * ml_score
 
     if final_score > 0.2:
-        pred, conf = "Buy", round(min(1.0, 0.6 + final_score*0.4),2)
+        pred, conf = "Buy", round(min(1.0, 0.6 + final_score * 0.4), 2)
     elif final_score < -0.2:
-        pred, conf = "Sell", round(min(1.0, 0.6 - final_score*0.4),2)
+        pred, conf = "Sell", round(min(1.0, 0.6 - final_score * 0.4), 2)
     else:
         pred, conf = "Hold", 0.6
 
@@ -169,12 +169,3 @@ def run_workflow(stock_names=None):
         results.append(final_report)
 
     return results, agent_logs
-
-# ------------------------
-# Example Run
-# ------------------------
-if __name__ == "__main__":
-    stocks_to_analyze = ["SBI", "TCS", "INFY"]
-    reports, logs = run_workflow(stocks_to_analyze)
-    for r in reports:
-        print(r)
