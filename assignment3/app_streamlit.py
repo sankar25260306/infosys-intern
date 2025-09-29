@@ -1,198 +1,229 @@
-# multi_agent_stock_app.py
+# Import Streamlit library for building web apps
+import streamlit as st  
 
-from langchain.memory import ConversationBufferMemory
-from alpha_vantage.timeseries import TimeSeries
-import pandas as pd
-import matplotlib.pyplot as plt
-import random
-import json
-from textblob import TextBlob
-from io import BytesIO
+# Import pandas for data manipulation and analysis
+import pandas as pd  
 
-# ------------------------
-# Alpha Vantage API Key
-# ------------------------
-ALPHA_API_KEY = "BBMI502O0ZLD50VF"
-FALLBACK_CSV = "./NIFTY 50-29-09-2024-to-29-09-2025.csv"  # Ensure path is correct
+# Import matplotlib for plotting charts
+import matplotlib.pyplot as plt  
 
-# ------------------------
-# Scoped Memories
-# ------------------------
-memories = {
-    "input": ConversationBufferMemory(memory_key="input_memory", input_key="user_input", output_key="response_output"),
-    "price": ConversationBufferMemory(memory_key="price_memory", input_key="price", output_key="price_output"),
-    "history": ConversationBufferMemory(memory_key="history_memory", input_key="history", output_key="history_output"),
-    "analysis": ConversationBufferMemory(memory_key="analysis_memory", input_key="analysis", output_key="analysis_output"),
-    "sentiment": ConversationBufferMemory(memory_key="sentiment_memory", input_key="sentiment", output_key="sentiment_output")
-}
+# Import random for fallback/random data generation
+import random  
+
+# Import BytesIO to handle in-memory image buffers
+from io import BytesIO  
+
+# Import FPDF for generating PDF reports
+from fpdf import FPDF  
+
+# Import tempfile and os for temporary file handling
+import tempfile, os  
+
+# Import workflow function and fallback CSV from another module
+from final_multi_agent_stock_with_sentiment import run_workflow, FALLBACK_CSV  
 
 # ------------------------
-# Structured Logs
+# Page Config
 # ------------------------
-agent_logs = []
 
-def log_action(agent, action, details):
-    agent_logs.append({"agent": agent, "action": action, "details": details})
+# Set Streamlit page title and layout
+st.set_page_config(page_title="📈 Multi-Agent Stock Analyzer", layout="wide")  
 
-# ------------------------
-# Agents
-# ------------------------
-def input_agent(stock_name):
-    stock_name = stock_name.upper().strip()
-    memories["input"].save_context({"user_input": stock_name}, {"response_output": "Validated"})
-    log_action("Input Agent", "validate_stock_name", {"stock_name": stock_name})
-    return stock_name
-
-def price_agent(stock_name):
-    symbol = stock_name.upper()
-    ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
-    try:
-        # Attempt API call
-        data, _ = ts.get_daily(symbol=symbol, outputsize='compact')
-        if data.empty:
-            raise ValueError("No API data")
-        price = data['4. close'].iloc[-1]
-        confidence = 0.9
-        log_action("Price Agent", "api_price_used", {"stock_name": stock_name, "price": price})
-    except Exception as e:
-        # Fallback to CSV
-        try:
-            fallback_df = pd.read_csv(FALLBACK_CSV)
-            price = fallback_df["Close"].iloc[-1]
-            confidence = 0.7
-            log_action("Price Agent", "fallback_csv_used", {"stock_name": stock_name, "price": price})
-        except FileNotFoundError:
-            # Final fallback to random
-            price = random.randint(100, 2000)
-            confidence = 0.5
-            log_action("Price Agent", "fallback_random_used", {"stock_name": stock_name, "price": price})
-
-    memories["price"].save_context({"price": str(price)}, {"price_output": str(confidence)})
-    return price, confidence
-
-def history_agent(symbol):
-    ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
-    try:
-        df, _ = ts.get_daily(symbol=symbol, outputsize='compact')
-        df = df.rename(columns={
-            '1. open': 'Open',
-            '2. high': 'High',
-            '3. low': 'Low',
-            '4. close': 'Close',
-            '5. volume': 'Volume'
-        })
-        df['Date'] = pd.to_datetime(df.index)
-        df = df.sort_values('Date')
-        if df.empty:
-            raise ValueError("No historical API data")
-        log_action("Historical Data Agent", "api_history_used", {"symbol": symbol, "rows": len(df)})
-    except Exception as e:
-        try:
-            fallback_df = pd.read_csv(FALLBACK_CSV)
-            fallback_df["Date"] = pd.to_datetime(fallback_df["Date"])
-            df = fallback_df.sort_values("Date")
-            log_action("Historical Data Agent", "fallback_csv_used", {"symbol": symbol, "rows": len(df)})
-        except FileNotFoundError:
-            # Random fallback
-            dates = pd.date_range(end=pd.Timestamp.today(), periods=30)
-            df = pd.DataFrame({
-                "Date": dates,
-                "Open": [random.randint(100, 2000) for _ in range(30)],
-                "High": [random.randint(100, 2000) for _ in range(30)],
-                "Low": [random.randint(100, 2000) for _ in range(30)],
-                "Close": [random.randint(100, 2000) for _ in range(30)],
-                "Volume": [random.randint(1000, 50000) for _ in range(30)]
-            })
-            log_action("Historical Data Agent", "fallback_random_used", {"symbol": symbol})
-
-    memories["history"].save_context({"history": df.to_json()}, {"history_output": "Stored"})
-    return df
-
-def analysis_agent(df):
-    sma = df['Close'].rolling(window=5).mean().iloc[-1]
-    rsi = random.uniform(30, 70)  # Placeholder RSI
-    memories["analysis"].save_context({"analysis": json.dumps({"SMA": sma, "RSI": rsi})}, {"analysis_output": str(0.8)})
-    log_action("Technical Analysis Agent", "compute_indicators", {"SMA": sma, "RSI": rsi})
-    return {"SMA": sma, "RSI": rsi}
-
-def sentiment_agent(symbol, news_headlines=None):
-    if not news_headlines:
-        mock_news = [
-            f"{symbol} stock rises after quarterly earnings",
-            f"{symbol} faces regulatory challenges",
-            f"{symbol} announces new product line"
-        ]
-        headlines = random.sample(mock_news, 2)
-    else:
-        headlines = news_headlines
-
-    sentiments = []
-    for h in headlines:
-        polarity = TextBlob(h).sentiment.polarity
-        if polarity > 0.1:
-            sentiments.append("Positive")
-        elif polarity < -0.1:
-            sentiments.append("Negative")
-        else:
-            sentiments.append("Neutral")
-
-    if sentiments.count("Positive") > sentiments.count("Negative"):
-        overall_sentiment = "Positive"
-    elif sentiments.count("Negative") > sentiments.count("Positive"):
-        overall_sentiment = "Negative"
-    else:
-        overall_sentiment = "Neutral"
-
-    memories["sentiment"].save_context({"sentiment": json.dumps(headlines)}, {"sentiment_output": overall_sentiment})
-    log_action("News & Sentiment Agent", "analyze_sentiment", {"symbol": symbol, "headlines": headlines, "sentiment": overall_sentiment})
-    return overall_sentiment, headlines
-
-def prediction_agent(analysis, sentiment, price):
-    weights = {"technical": 0.5, "sentiment": 0.3, "ml": 0.2}
-    technical_score = 1 if analysis["SMA"] < price else -1
-    sentiment_score = 1 if sentiment == "Positive" else -1 if sentiment == "Negative" else 0
-    ml_score = random.choice([1, 0, -1])
-
-    final_score = weights["technical"] * technical_score + weights["sentiment"] * sentiment_score + weights["ml"] * ml_score
-
-    if final_score > 0.2:
-        pred, conf = "Buy", round(min(1.0, 0.6 + final_score * 0.4), 2)
-    elif final_score < -0.2:
-        pred, conf = "Sell", round(min(1.0, 0.6 - final_score * 0.4), 2)
-    else:
-        pred, conf = "Hold", 0.6
-
-    log_action("Prediction Agent", "make_prediction", {"prediction": pred, "confidence": conf})
-    return pred, conf
-
-def report_agent(stock_name, price, analysis, sentiment, headlines, prediction, conf):
-    report = f"""
-Stock: {stock_name}
-Current Price: {price}
-Technical Analysis: SMA={analysis['SMA']:.2f}, RSI={analysis['RSI']:.2f}
-News Headlines: {headlines}
-Sentiment: {sentiment}
-Prediction: {prediction} (Confidence: {conf})
-"""
-    log_action("Report Agent", "generate_report", {"stock_name": stock_name})
-    return report
+# Display main title on the web app
+st.title("📊 Multi-Agent Stock Market Research & Advisory")  
 
 # ------------------------
-# Workflow
+# Sidebar Input
 # ------------------------
-def run_workflow(stock_names=None):
-    if not stock_names:
-        stock_names = ["SBI"]
 
-    results = []
-    for name in stock_names:
-        stock_name = input_agent(name)
-        price, price_conf = price_agent(stock_name)
-        hist = history_agent(stock_name)
-        analysis = analysis_agent(hist)
-        sentiment, headlines = sentiment_agent(stock_name)
-        prediction, pred_conf = prediction_agent(analysis, sentiment, price)
-        final_report = report_agent(stock_name, price, analysis, sentiment, headlines, prediction, pred_conf)
-        results.append(final_report)
+# Display a sidebar header
+st.sidebar.header("🔹 Input")  
 
-    return results, agent_logs
+# Text input widget in sidebar for company names
+companies_input = st.sidebar.text_input(
+    "Enter company names (comma separated, e.g., SBI, TCS, INFY):"
+)  
+
+# Sidebar button to trigger analysis
+analyze_button = st.sidebar.button("Analyze")  
+
+# Markdown instruction text displayed on main page
+st.markdown(
+    "👈 Enter company names in the sidebar. "
+    "The system will provide reports, predictions, charts, and you can download a PDF."
+)  
+
+# ------------------------
+# Helper: Add chart from BytesIO to PDF
+# ------------------------
+
+# Function to add a matplotlib chart image to PDF
+def add_chart_to_pdf(pdf, img_bytes, title):  
+    # Create temporary file for image
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:  
+        tmpfile.write(img_bytes.getvalue())  # Write bytes to temp file
+        tmp_path = tmpfile.name  # Get temp file path
+
+    # Add chart title to PDF
+    pdf.set_font("Arial", 'B', 14)  
+    pdf.cell(0, 8, title, ln=True)  
+
+    # Insert image into PDF
+    pdf.image(tmp_path, w=180)  
+    pdf.ln(5)  # Add spacing
+
+    # Remove temporary file
+    os.remove(tmp_path)  
+
+# ------------------------
+# Analysis & Visualization
+# ------------------------
+
+# Run analysis only if analyze button is pressed
+if analyze_button:  
+    # Check if input is empty
+    if not companies_input.strip():  
+        st.sidebar.warning("⚠️ Please enter at least one company name.")  # Show warning
+    else:  
+        # Split input by comma and clean whitespace
+        companies = [c.strip() for c in companies_input.split(",") if c.strip()]  
+
+        # Show spinner while workflow is running
+        with st.spinner("Running multi-agent analysis... ⏳"):  
+            # Run multi-agent workflow and get reports and logs
+            reports, logs = run_workflow(companies)  
+
+        st.success("✅ Analysis Complete!")  # Show success message
+
+        # Prepare PDF report
+        pdf = FPDF()  
+        pdf.set_auto_page_break(auto=True, margin=15)  # Auto page breaks
+
+        # Loop through each company
+        for i, company in enumerate(companies):  
+            # Display report header
+            st.subheader(f"📄 Report: {company.upper()}")  
+
+            # ------------------------
+            # Show Report Text
+            # ------------------------
+            st.code(reports[i], language="text")  # Show report as code block
+
+            # Highlight prediction from report
+            pred_line = [line for line in reports[i].splitlines() if "Prediction" in line]  
+            if pred_line:  
+                pred = pred_line[0].split(":")[1].strip()  # Extract prediction text
+                if "Buy" in pred:  
+                    st.success(pred)  # Green highlight for Buy
+                elif "Sell" in pred:  
+                    st.error(pred)  # Red highlight for Sell
+                else:  
+                    st.warning(pred)  # Yellow highlight for Hold
+
+            # ------------------------
+            # Historical Data
+            # ------------------------
+            try:  
+                # Try reading fallback CSV
+                df = pd.read_csv(FALLBACK_CSV)  
+                df["Date"] = pd.to_datetime(df["Date"])  # Convert Date column
+                df = df.sort_values("Date").tail(60)  # Use last 60 days
+            except Exception:  
+                # Random fallback data if CSV fails
+                df = pd.DataFrame({  
+                    "Date": pd.date_range(end=pd.Timestamp.today(), periods=30),  
+                    "Close": [random.randint(100, 2000) for _ in range(30)]  
+                })  
+
+            # Calculate SMA
+            df["SMA"] = df["Close"].rolling(window=5).mean()  
+            # Generate placeholder RSI
+            df["RSI"] = [random.uniform(30, 70) for _ in range(len(df))]  
+            # Generate placeholder Sentiment
+            df["Sentiment"] = [random.choice([1, 0, -1]) for _ in range(len(df))]  
+
+            # ------------------------
+            # Charts
+            # ------------------------
+            col1, col2, col3 = st.columns(3)  # Divide page into 3 columns
+
+            # Close + SMA Chart
+            with col1:  
+                st.markdown("**Close & SMA Chart**")  
+                fig, ax = plt.subplots(figsize=(5, 3))  
+                ax.plot(df["Date"], df["Close"], label="Close")  
+                ax.plot(df["Date"], df["SMA"], label="SMA", color="orange")  
+                ax.legend()  
+                ax.set_xticklabels(df["Date"].dt.strftime("%Y-%m-%d"), rotation=45)  
+                img_sma = BytesIO()  
+                fig.savefig(img_sma, format="png")  
+                img_sma.seek(0)  
+                st.pyplot(fig)  
+                plt.close(fig)  
+
+            # RSI Chart
+            with col2:  
+                st.markdown("**RSI Chart**")  
+                fig, ax = plt.subplots(figsize=(5, 3))  
+                ax.plot(df["Date"], df["RSI"], color="green")  
+                ax.axhline(70, color="red", linestyle="--")  # Overbought line
+                ax.axhline(30, color="red", linestyle="--")  # Oversold line
+                ax.set_xticklabels(df["Date"].dt.strftime("%Y-%m-%d"), rotation=45)  
+                img_rsi = BytesIO()  
+                fig.savefig(img_rsi, format="png")  
+                img_rsi.seek(0)  
+                st.pyplot(fig)  
+                plt.close(fig)  
+
+            # Sentiment Chart
+            with col3:  
+                st.markdown("**Sentiment Chart**")  
+                fig, ax = plt.subplots(figsize=(5, 3))  
+                ax.bar(  
+                    df["Date"],  
+                    df["Sentiment"],  
+                    color=["green" if x == 1 else "red" if x == -1 else "gray" for x in df["Sentiment"]]  
+                )  
+                ax.set_xticklabels(df["Date"].dt.strftime("%Y-%m-%d"), rotation=45)  
+                img_sent = BytesIO()  
+                fig.savefig(img_sent, format="png")  
+                img_sent.seek(0)  
+                st.pyplot(fig)  
+                plt.close(fig)  
+
+            # ------------------------
+            # Add to PDF
+            # ------------------------
+            pdf.add_page()  # Start new PDF page
+            pdf.set_font("Arial", 'B', 16)  # Title font
+            pdf.cell(0, 10, f"Report: {company.upper()}", ln=True)  # Add title
+            pdf.set_font("Arial", '', 12)  # Normal font
+            pdf.multi_cell(0, 8, reports[i])  # Add report text
+            pdf.ln(5)  # Add spacing
+
+            # Add charts to PDF
+            add_chart_to_pdf(pdf, img_sma, "Close & SMA Chart")  
+            add_chart_to_pdf(pdf, img_rsi, "RSI Chart")  
+            add_chart_to_pdf(pdf, img_sent, "Sentiment Chart")  
+
+        # ------------------------
+        # Download PDF Button
+        # ------------------------
+        pdf_bytes = pdf.output(dest="S").encode("latin1")  # Convert PDF to bytes
+        st.download_button(  
+            label="📥 Download Full Report as PDF",  
+            data=pdf_bytes,  
+            file_name="Stock_Analysis_Report.pdf",  
+            mime="application/pdf"  
+        )  
+
+        # ------------------------
+        # Show Logs
+        # ------------------------
+        st.subheader("📝 Agent Logs")  
+        st.dataframe(pd.DataFrame(logs))  # Display logs as table
+
+# ------------------------
+# Footer
+# ------------------------
+st.markdown("---\n👨‍💻 Designed by: **Sankar Pandi S** | Multi-Agent Stock Analyzer")  
