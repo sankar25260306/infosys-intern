@@ -1,3 +1,13 @@
+"""
+multi_agent_stock_assistant.py
+
+Final integrated multi-agent stock assistant:
+- Core agents: input, price, history, analysis, sentiment, prediction, report, comparison
+- Specialists: Stock Information Specialist, Stock Calculation Specialist
+- Conversation router to choose specialist based on intent
+- Example usage at the bottom
+"""
+
 # ------------------------
 # Imports
 # ------------------------
@@ -5,246 +15,340 @@ from langchain.memory import ConversationBufferMemory  # Memory buffer for stori
 from alpha_vantage.timeseries import TimeSeries         # Alpha Vantage API to fetch stock prices
 import pandas as pd                                    # Data handling and manipulation library
 import matplotlib.pyplot as plt                        # Plotting library for charts
-import random                                         # Generate random numbers for fallbacks
-import json                                           # JSON serialization for storing structured data
-import datetime                                       # Handling dates and times
-from textblob import TextBlob                          # Sentiment analysis on text
-from io import BytesIO                                 # In-memory file handling
-import numpy as np                                     # Numerical operations (arrays, math functions)
+import random, json, datetime                           # Random fallback, JSON, date-time handling
+from textblob import TextBlob                           # Sentiment analysis
+from io import BytesIO                                  # For in-memory chart handling (not fully used here)
+import numpy as np                                      # Numerical computations
+import mplfinance as mpf                                # For candlestick charts
+from typing import List, Tuple, Dict, Any              # Type hints for clarity
 
 # ------------------------
 # Config
 # ------------------------
-ALPHA_API_KEY = "BBMI502O0ZLD50VF"                    # API key for Alpha Vantage
-FALLBACK_CSV = "NIFTY 50-29-09-2024-to-29-09-2025.csv"  # CSV file fallback if API fails
+ALPHA_API_KEY = "BBMI502O0ZLD50VF"                     # Alpha Vantage API Key
+FALLBACK_CSV = "NIFTY 50-29-09-2024-to-29-09-2025.csv" # Fallback CSV if API fails
 EDUCATIONAL_NOTICE = "This is an educational prototype, not a live trading advisor."  # Disclaimer
 
 # ------------------------
-# Memories & Scratchpad
+# Memories
 # ------------------------
-memories = {    
-    "input": ConversationBufferMemory(memory_key="input_memory", input_key="user_input", output_key="response_output"),  # Stores user input
-    "price": ConversationBufferMemory(memory_key="price_memory", input_key="price", output_key="price_output"),  # Stores price data
-    "history": ConversationBufferMemory(memory_key="history_memory", input_key="history", output_key="history_output"),  # Stores historical data
-    "analysis": ConversationBufferMemory(memory_key="analysis_memory", input_key="analysis", output_key="analysis_output"),  # Stores technical analysis
-    "sentiment": ConversationBufferMemory(memory_key="sentiment_memory", input_key="sentiment", output_key="sentiment_output"),  # Stores sentiment
-    "comparison": ConversationBufferMemory(memory_key="comparison_memory", input_key="comparison_input", output_key="comparison_output"),  # Stores comparisons
-    "scratchpad": ConversationBufferMemory(memory_key="scratchpad_memory", input_key="scratchpad_input", output_key="scratchpad_output")  # Temporary scratchpad
-}    
+# Create memory buffers for each agent to store conversation context
+memories = {
+    "input": ConversationBufferMemory(memory_key="input_memory", input_key="user_input", output_key="response_output"),
+    "price": ConversationBufferMemory(memory_key="price_memory", input_key="price", output_key="price_output"),
+    "history": ConversationBufferMemory(memory_key="history_memory", input_key="history", output_key="history_output"),
+    "analysis": ConversationBufferMemory(memory_key="analysis_memory", input_key="analysis", output_key="analysis_output"),
+    "sentiment": ConversationBufferMemory(memory_key="sentiment_memory", input_key="sentiment", output_key="sentiment_output"),
+    "comparison": ConversationBufferMemory(memory_key="comparison_memory", input_key="comparison_input", output_key="comparison_output"),
+    "scratchpad": ConversationBufferMemory(memory_key="scratchpad_memory", input_key="scratchpad_input", output_key="scratchpad_output")
+}
 
 # ------------------------
-# Structured JSON Logs
+# Logs
 # ------------------------
-agent_logs = []  # List to store structured logs of agent actions
+agent_logs = []  # Stores timestamped actions of all agents
 
-def log_action(agent, action, details, confidence=None):    
-    """Log an action by an agent with timestamp, details, and optional confidence."""
-    agent_logs.append({    # Append dictionary to logs
-        "timestamp": datetime.datetime.now().isoformat(),  # Current timestamp
-        "agent": agent,    # Agent name
-        "action": action,  # Action description
-        "details": details,  # Action details
-        "confidence": confidence  # Optional confidence score
-    })    
-
-# ------------------------
-# Input Agent
-# ------------------------
-def input_agent(stock_name):    
-    stock_name = stock_name.upper().strip()  # Convert to uppercase and remove whitespace
-    memories["input"].save_context({"user_input": stock_name}, {"response_output": "Validated"})  # Save input to memory
-    memories["scratchpad"].save_context({"stock_validated": stock_name}, {"status": "Input Agent done"})  # Save validated stock
-    log_action("Input Agent", "validate_stock_name", {"stock_name": stock_name})  # Log the action
-    return stock_name  # Return validated stock name
+def log_action(agent: str, action: str, details: Dict[str, Any], confidence: float=None):
+    """Record agent actions with optional confidence level"""
+    agent_logs.append({
+        "timestamp": datetime.datetime.now().isoformat(),
+        "agent": agent,
+        "action": action,
+        "details": details,
+        "confidence": confidence
+    })
 
 # ------------------------
-# Price Agent
+# Agents
 # ------------------------
-def price_agent(stock_name):    
-    ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')  # Initialize Alpha Vantage API
-    try:    
-        data, _ = ts.get_daily(symbol=stock_name, outputsize='compact')  # Fetch daily stock prices
-        if data.empty: raise Exception("No data")  # Raise exception if API returns empty
-        price = data['4. close'].iloc[-1]  # Get latest closing price
-        confidence = 0.9  # High confidence from API
-        log_action("Price Agent", "api_price_used", {"stock_name": stock_name, "price": price}, confidence)  # Log API usage
-    except Exception:    
-        try:    
-            fallback_df = pd.read_csv(FALLBACK_CSV)  # Read CSV fallback
-            price = fallback_df["Close"].iloc[-1]  # Last close price from CSV
-            confidence = 0.7  # Medium confidence
-            log_action("Price Agent", "fallback_csv_used", {"stock_name": stock_name, "price": price}, confidence)  # Log CSV usage
-        except Exception:    
-            price = random.randint(100, 2000)  # Random fallback price
-            confidence = 0.5  # Low confidence
-            log_action("Price Agent", "fallback_random_used", {"stock_name": stock_name, "price": price}, confidence)  # Log random fallback
-    memories["price"].save_context({"price": str(price)}, {"price_output": str(confidence)})  # Save price to memory
-    memories["scratchpad"].save_context({"latest_price": price}, {"confidence": confidence})  # Save latest price to scratchpad
-    return price, confidence  # Return price and confidence
+def input_agent(stock_name: str) -> str:
+    """Validate and standardize stock symbol input"""
+    stock_name = stock_name.upper().strip()  # Ensure uppercase and no spaces
+    memories["input"].save_context({"user_input": stock_name}, {"response_output": "Validated"})
+    memories["scratchpad"].save_context({"stock_validated": stock_name}, {"status": "Input Agent done"})
+    log_action("Input Agent", "validate_stock_name", {"stock_name": stock_name})
+    return stock_name
 
-# ------------------------
-# History Agent
-# ------------------------
-def history_agent(symbol):    
-    ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')  # Initialize Alpha Vantage API
-    try:    
-        df, _ = ts.get_daily(symbol=symbol, outputsize='compact')  # Fetch historical prices
-        df = df.rename(columns={'1. open':'Open','2. high':'High','3. low':'Low','4. close':'Close','5. volume':'Volume'})  # Rename columns
-        df['Date'] = pd.to_datetime(df.index)  # Convert index to datetime
-        df = df.sort_values('Date')  # Sort by date
-        if df.empty: raise Exception("No historical data")  # Raise exception if empty
-        log_action("Historical Data Agent", "api_history_used", {"symbol": symbol, "rows": len(df)})  # Log API success
-    except Exception:    
-        try:    
-            fallback_df = pd.read_csv(FALLBACK_CSV)  # Read CSV fallback
-            fallback_df["Date"] = pd.to_datetime(fallback_df["Date"])  # Convert Date column
-            df = fallback_df.sort_values("Date")  # Sort by date
-            log_action("Historical Data Agent", "fallback_csv_used", {"symbol": symbol, "rows": len(df)})  # Log CSV usage
-        except Exception:    
-            dates = pd.date_range(end=pd.Timestamp.today(), periods=30)  # Generate 30 random dates
-            df = pd.DataFrame({"Date": dates, "Close": [random.randint(100, 2000) for _ in range(30)]})  # Random close prices
-            log_action("Historical Data Agent", "fallback_random_used", {"symbol": symbol})  # Log random fallback
-    memories["history"].save_context({"history": df.to_json()}, {"history_output": "Stored"})  # Save history to memory
-    return df  # Return historical dataframe
+def price_agent(stock_name: str) -> Tuple[float, float]:
+    """Fetch latest stock price from API, fallback CSV, or random value"""
+    ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
+    try:
+        # Try Alpha Vantage API first
+        data, _ = ts.get_daily(symbol=stock_name, outputsize='compact')
+        if data.empty:
+            raise Exception("No data from API")
+        price = float(data['4. close'].iloc[-1])
+        confidence = 0.9
+        log_action("Price Agent", "api_price_used", {"stock_name": stock_name, "price": price}, confidence)
+    except Exception as e:
+        try:
+            # Fallback CSV if API fails
+            fallback_df = pd.read_csv(FALLBACK_CSV)
+            price = float(fallback_df["Close"].iloc[-1])
+            confidence = 0.7
+            log_action("Price Agent", "fallback_csv_used", {"stock_name": stock_name, "price": price}, confidence)
+        except Exception:
+            # Last resort: random price
+            price = float(random.randint(100, 2000))
+            confidence = 0.5
+            log_action("Price Agent", "fallback_random_used", {"stock_name": stock_name, "price": price}, confidence)
 
-# ------------------------
-# Technical Analysis
-# ------------------------
-def compute_rsi(df, window=14):    
-    delta = df['Close'].diff()  # Price changes
-    gain = (delta.where(delta>0,0)).rolling(window).mean()  # Average gains
-    loss = (-delta.where(delta<0,0)).rolling(window).mean()  # Average losses
-    rs = gain / loss  # Relative strength
-    return 100 - (100 / (1 + rs))  # RSI formula
+    memories["price"].save_context({"price": str(price)}, {"price_output": str(confidence)})
+    memories["scratchpad"].save_context({"latest_price": price}, {"confidence": confidence})
+    return price, confidence
 
-def analysis_agent(df):    
-    sma = df['Close'].rolling(window=5).mean().iloc[-1]  # Compute SMA(5)
-    rsi_series = compute_rsi(df)  # Compute RSI
-    rsi = rsi_series.iloc[-1] if not rsi_series.empty else 50  # Latest RSI or default 50
-    memories["analysis"].save_context({"analysis": json.dumps({"SMA": sma, "RSI": rsi})}, {"analysis_output": str(0.8)})  # Save to memory
-    memories["scratchpad"].save_context({"SMA": sma, "RSI": rsi}, {"status": "Technical Analysis Done"})  # Save to scratchpad
-    log_action("Technical Analysis Agent", "compute_indicators", {"SMA": sma, "RSI": rsi}, 0.8)  # Log analysis
-    return {"SMA": sma, "RSI": rsi}  # Return indicators
+def history_agent(symbol: str) -> pd.DataFrame:
+    """Fetch historical OHLC data for stock, fallback to CSV or random data"""
+    ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
+    try:
+        df, _ = ts.get_daily(symbol=symbol, outputsize='compact')
+        df = df.rename(columns={'1. open':'Open','2. high':'High','3. low':'Low','4. close':'Close','5. volume':'Volume'})
+        df['Date'] = pd.to_datetime(df.index)
+        df = df.sort_values('Date').reset_index(drop=True)
+        if df.empty:
+            raise Exception("No historical data")
+        log_action("Historical Data Agent", "api_history_used", {"symbol": symbol, "rows": len(df)})
+    except Exception:
+        try:
+            fallback_df = pd.read_csv(FALLBACK_CSV)
+            fallback_df["Date"] = pd.to_datetime(fallback_df["Date"])
+            df = fallback_df.sort_values("Date").reset_index(drop=True)
+            log_action("Historical Data Agent", "fallback_csv_used", {"symbol": symbol, "rows": len(df)})
+        except Exception:
+            # Fallback: generate random data for last 30 days
+            dates = pd.date_range(end=pd.Timestamp.today(), periods=30)
+            df = pd.DataFrame({"Date": dates, "Close": [random.randint(100, 2000) for _ in range(30)]})
+            log_action("Historical Data Agent", "fallback_random_used", {"symbol": symbol})
 
-# ------------------------
-# Sentiment Agent
-# ------------------------
-def sentiment_agent(symbol, news_headlines=None):    
-    if not news_headlines:    
-        mock_news = [  # Mock news headlines
-            f"{symbol} stock rises after quarterly earnings",    
-            f"{symbol} faces regulatory challenges",    
-            f"{symbol} announces new product line"    
-        ]    
-        headlines = random.sample(mock_news, 2)  # Pick 2 random headlines
-    else:    
-        headlines = news_headlines  # Use provided headlines
-    
-    sentiments = []  # List to store sentiment labels
-    for h in headlines:    
-        polarity = TextBlob(h).sentiment.polarity  # Compute polarity
-        if polarity > 0.1: sentiments.append("Positive")  # Positive sentiment
-        elif polarity < -0.1: sentiments.append("Negative")  # Negative sentiment
-        else: sentiments.append("Neutral")  # Neutral sentiment
-    
-    overall_sentiment = "Neutral"  # Default overall sentiment
-    if sentiments.count("Positive") > sentiments.count("Negative"): overall_sentiment = "Positive"    
-    elif sentiments.count("Negative") > sentiments.count("Positive"): overall_sentiment = "Negative"    
-    
-    memories["sentiment"].save_context({"sentiment": json.dumps(headlines)}, {"sentiment_output": overall_sentiment})  # Save headlines
-    memories["scratchpad"].save_context({"Sentiment": overall_sentiment}, {"status": "Sentiment Analysis Done"})  # Save result
-    log_action("Sentiment Agent", "analyze_sentiment", {"symbol": symbol, "headlines": headlines, "sentiment": overall_sentiment}, 0.9)  # Log sentiment
-    return overall_sentiment, headlines  # Return sentiment and headlines
+    memories["history"].save_context({"history": df.to_json(orient="records", date_format="iso")}, {"history_output": "Stored"})
+    return df
 
-# ------------------------
-# Prediction Agent
-# ------------------------
-def prediction_agent(analysis, sentiment, price, conf_tech=0.8, conf_sent=0.9, conf_ml=0.7):    
-    weights = {"technical":0.5, "sentiment":0.3, "ml":0.2}  # Weight each signal
-    technical_score = 1 if analysis["SMA"] < price else -1  # Buy if SMA < price
-    sentiment_score = 1 if sentiment=="Positive" else -1 if sentiment=="Negative" else 0  # Map sentiment
-    ml_score = random.choice([1,0,-1])  # Mock ML score
-    
-    final_score = technical_score*weights["technical"]*conf_tech + \  # Weighted final score
+def compute_rsi(df: pd.DataFrame, window: int=14) -> pd.Series:
+    """Compute Relative Strength Index (RSI) for the stock"""
+    close = df['Close'].astype(float)
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=window, min_periods=window).mean()
+    avg_loss = loss.rolling(window=window, min_periods=window).mean()
+    rs = avg_gain / (avg_loss.replace(0, np.nan))
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(50)  # Neutral where RSI cannot be computed
+    return rsi
+
+def analysis_agent(df: pd.DataFrame) -> Dict[str, float]:
+    """Compute technical indicators like SMA and RSI"""
+    if 'Close' not in df.columns:
+        raise ValueError("DataFrame must contain 'Close' column for analysis")
+    sma = float(df['Close'].rolling(window=5, min_periods=1).mean().iloc[-1])
+    rsi_series = compute_rsi(df)
+    rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
+    memories["analysis"].save_context({"analysis": json.dumps({"SMA": sma, "RSI": rsi})}, {"analysis_output": str(0.8)})
+    memories["scratchpad"].save_context({"SMA": sma, "RSI": rsi}, {"status": "Technical Analysis Done"})
+    log_action("Technical Analysis Agent", "compute_indicators", {"SMA": sma, "RSI": rsi}, 0.8)
+    return {"SMA": sma, "RSI": rsi}
+
+def sentiment_agent(symbol: str, news_headlines: List[str]=None) -> Tuple[str, List[str]]:
+    """Analyze sentiment from news headlines"""
+    if not news_headlines:
+        # Mock headlines if none provided
+        mock_news = [
+            f"{symbol} stock rises after quarterly earnings",
+            f"{symbol} faces regulatory challenges",
+            f"{symbol} announces new product line",
+            f"{symbol} expands into new market",
+            f"{symbol} sees slowdown in demand"
+        ]
+        headlines = random.sample(mock_news, 2)
+    else:
+        headlines = news_headlines
+
+    sentiments = []
+    for h in headlines:
+        polarity = TextBlob(h).sentiment.polarity
+        if polarity > 0.1:
+            sentiments.append("Positive")
+        elif polarity < -0.1:
+            sentiments.append("Negative")
+        else:
+            sentiments.append("Neutral")
+
+    # Aggregate overall sentiment
+    overall_sentiment = "Neutral"
+    if sentiments.count("Positive") > sentiments.count("Negative"):
+        overall_sentiment = "Positive"
+    elif sentiments.count("Negative") > sentiments.count("Positive"):
+        overall_sentiment = "Negative"
+
+    memories["sentiment"].save_context({"sentiment": json.dumps(headlines)}, {"sentiment_output": overall_sentiment})
+    memories["scratchpad"].save_context({"Sentiment": overall_sentiment}, {"status": "Sentiment Analysis Done"})
+    log_action("Sentiment Agent", "analyze_sentiment", {"symbol": symbol, "headlines": headlines, "sentiment": overall_sentiment}, 0.9)
+    return overall_sentiment, headlines
+
+def prediction_agent(analysis: Dict[str, float], sentiment: str, price: float, conf_tech: float=0.8, conf_sent: float=0.9, conf_ml: float=0.7) -> Tuple[str, float]:
+    """Combine technical + sentiment + ML to predict Buy/Sell/Hold"""
+    weights = {"technical":0.5, "sentiment":0.3, "ml":0.2}
+    technical_score = 1 if analysis["SMA"] < price else -1
+    sentiment_score = 1 if sentiment=="Positive" else -1 if sentiment=="Negative" else 0
+    ml_score = random.choice([1,0,-1])  # placeholder for ML model
+    final_score = technical_score*weights["technical"]*conf_tech + \
                   sentiment_score*weights["sentiment"]*conf_sent + \
                   ml_score*weights["ml"]*conf_ml
-    
-    if final_score>0.2: pred, conf = "Buy", round(min(1.0,0.6+final_score*0.4),2)  # Buy signal
-    elif final_score<-0.2: pred, conf = "Sell", round(min(1.0,0.6-final_score*0.4),2)  # Sell signal
-    else: pred, conf = "Hold", 0.6  # Hold signal
-    
-    log_action("Prediction Agent", "resolve_conflict",  # Log decision
-               {"technical_score": technical_score, "sentiment_score": sentiment_score,    
-                "ml_score": ml_score, "final_score": final_score, "prediction": pred})    
-    memories["scratchpad"].save_context({"Prediction": pred, "Prediction_Confidence": conf}, {"status": "Prediction Done"})  # Save prediction
-    return pred, conf  # Return prediction and confidence
+
+    # Map final_score to prediction
+    if final_score > 0.2:
+        pred, conf = "Buy", round(min(1.0, 0.6 + final_score * 0.4), 2)
+    elif final_score < -0.2:
+        pred, conf = "Sell", round(min(1.0, 0.6 - final_score * 0.4), 2)
+    else:
+        pred, conf = "Hold", 0.6
+
+    log_action("Prediction Agent", "resolve_conflict",
+               {"technical_score": technical_score, "sentiment_score": sentiment_score,
+                "ml_score": ml_score, "final_score": final_score, "prediction": pred})
+    memories["scratchpad"].save_context({"Prediction": pred, "Prediction_Confidence": conf}, {"status": "Prediction Done"})
+    return pred, conf
 
 # ------------------------
-# Report Agent
+# Report Agent (Upgraded)
 # ------------------------
-def report_agent(stock_name, price, analysis, sentiment, headlines, prediction, conf, hist_df):    
-    plt.figure(figsize=(10,4))  # Set figure size
-    plt.plot(hist_df['Date'], hist_df['Close'], label='Close Price')  # Plot close price
-    plt.plot(hist_df['Date'], hist_df['Close'].rolling(5).mean(), label='SMA(5)')  # Plot SMA(5)
-    plt.title(f"{stock_name} - Price & SMA")  # Title
-    plt.xlabel("Date")  # X-axis label
-    plt.ylabel("Price")  # Y-axis label
-    plt.legend()  # Show legend
-    plt.show()  # Display plot
-    
-    report = f"""  # Create text report
-Stock: {stock_name}    
-Current Price: {price}    
-Technical Analysis: SMA={analysis['SMA']:.2f}, RSI={analysis['RSI']:.2f}    
-News Headlines: {headlines}    
-Sentiment: {sentiment}    
-Prediction: {prediction} (Confidence: {conf})    
-{EDUCATIONAL_NOTICE}    
-"""    
-    log_action("Report Agent", "generate_report", {"stock_name": stock_name})  # Log report generation
-    return report  # Return report string
+def report_agent(stock_name: str, price: float, analysis: Dict[str, float], sentiment: str, headlines: List[str], prediction: str, conf: float, hist_df: pd.DataFrame) -> str:
+    """Generate textual + visual report for stock"""
+    try:
+        df_plot = hist_df.copy()
+        if set(['Open','High','Low','Close']).issubset(df_plot.columns):
+            df_plot = df_plot.set_index("Date")
+            mpf.plot(df_plot, type="candle", mav=(5,), volume=False, show_nontrading=False, title=f"{stock_name} - Candlestick & SMA(5)")
+        else:
+            # fallback simple line plot
+            plt.figure(figsize=(10,4))
+            plt.plot(hist_df["Date"], hist_df["Close"], label="Close")
+            plt.title(f"{stock_name} - Close Price")
+            plt.xlabel("Date")
+            plt.ylabel("Close")
+            plt.legend()
+            plt.tight_layout()
+            plt.show()
+    except Exception as e:
+        log_action("Report Agent", "plotting_failed", {"error": str(e)})
+
+    # Interpret RSI/SMA
+    rsi_value = analysis.get('RSI', 50.0)
+    rsi_signal = "Overbought" if rsi_value > 70 else "Oversold" if rsi_value < 30 else "Neutral"
+    sma_signal = "Bullish (Price above SMA)" if price > analysis.get('SMA', price) else "Bearish (Price below SMA)"
+
+    # Textual report
+    report = f"""
+Stock: {stock_name}
+Current Price: {price:.2f}
+Technical Analysis:
+  - SMA(5) = {analysis.get('SMA', 0):.2f} → {sma_signal}
+  - RSI = {rsi_value:.2f} → {rsi_signal}
+News Headlines: {headlines}
+Sentiment: {sentiment}
+Prediction: {prediction} (Confidence: {conf})
+{EDUCATIONAL_NOTICE}
+"""
+    log_action("Report Agent", "generate_report", {"stock_name": stock_name, "charts": ["candlestick_or_close","SMA","RSI"]})
+    return report
 
 # ------------------------
-# Comparison Agent
+# Comparison Agent (Upgraded)
 # ------------------------
-def comparison_agent(stock_names):    
-    comparison_results = []  # List to store stock comparisons
-    scratch = memories["scratchpad"].load_memory_variables()  # Load latest scratchpad variables
-    for stock in stock_names:    
-        comparison_results.append({  # Append metrics for each stock
-            "Stock": stock,    
-            "Price": scratch.get("latest_price", None),    
-            "SMA": scratch.get("SMA", None),    
-            "RSI": scratch.get("RSI", None),    
-            "Sentiment": scratch.get("Sentiment", None),    
-            "Prediction": scratch.get("Prediction", None),    
-            "Confidence": scratch.get("Prediction_Confidence", 0)    
-        })    
-    
-    ranked = sorted(comparison_results, key=lambda x: x["Confidence"], reverse=True)  # Rank by confidence
-    memories["comparison"].save_context({"comparison": json.dumps(ranked)}, {"comparison_output": "Stored"})  # Save ranked comparison
-    
-    print("\n=== Comparative Analysis ===")  # Print header
-    for r in ranked:  # Print each stock's metrics
-        print(f"{r['Stock']}: Price={r['Price']}, SMA={r['SMA']:.2f}, RSI={r['RSI']:.2f}, "    
-              f"Sentiment={r['Sentiment']}, Prediction={r['Prediction']}, Confidence={r['Confidence']}")    
-    return ranked  # Return ranked comparison
+def comparison_agent(stock_names: List[str], hist_dfs: List[pd.DataFrame]) -> List[Dict[str, Any]]:
+    """Compare multiple stocks and plot confidence & normalized price trends"""
+    comparison_results = []
+    scratch = memories["scratchpad"].load_memory_variables()
+    for stock, df in zip(stock_names, hist_dfs):
+        comparison_results.append({
+            "Stock": stock,
+            "Price": scratch.get("latest_price", None),
+            "SMA": scratch.get("SMA", None),
+            "RSI": scratch.get("RSI", None),
+            "Sentiment": scratch.get("Sentiment", None),
+            "Prediction": scratch.get("Prediction", None),
+            "Confidence": scratch.get("Prediction_Confidence", 0)
+        })
+
+    # Rank by confidence
+    ranked = sorted(comparison_results, key=lambda x: x["Confidence"] or 0, reverse=True)
+    memories["comparison"].save_context({"comparison": json.dumps(ranked)}, {"comparison_output": "Stored"})
+
+    # Normalized price chart
+    plt.figure(figsize=(10,5))
+    for stock, df in zip(stock_names, hist_dfs):
+        df2 = df.copy()
+        if "Close" in df2.columns and len(df2) > 0:
+            df2["Norm"] = df2["Close"].astype(float) / float(df2["Close"].iloc[0]) * 100
+            plt.plot(df2["Date"], df2["Norm"], label=stock)
+    plt.title("Normalized Price Comparison")
+    plt.xlabel("Date")
+    plt.ylabel("Index (100=Start)")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # Confidence bar chart
+    plt.figure(figsize=(8,4))
+    plt.bar([r["Stock"] for r in ranked], [r["Confidence"] for r in ranked])
+    plt.title("Prediction Confidence Comparison")
+    plt.ylabel("Confidence")
+    plt.tight_layout()
+    plt.show()
+
+    return ranked
 
 # ------------------------
-# Workflow
+# Specialists (Conversation Flows)
 # ------------------------
-def run_workflow(stock_names=None):    
-    if not stock_names:    
-        stock_names = ["SBI"]  # Default stock if none provided
-    
-    results = []  # List to store reports
-    for name in stock_names:    
-        stock_name = input_agent(name)  # Validate stock
-        price, price_conf = price_agent(stock_name)  # Get latest price
-        hist = history_agent(stock_name)  # Get historical prices
-        analysis = analysis_agent(hist)  # Compute SMA/RSI
-        sentiment, headlines = sentiment_agent(stock_name)  # Analyze sentiment
-        prediction, pred_conf = prediction_agent(analysis, sentiment, price)  # Generate prediction
-        final_report = report_agent(stock_name, price, analysis, sentiment, headlines, prediction, pred_conf, hist)  # Generate report
-        results.append(final_report)  # Append report
-    return results, agent_logs  # Return all reports and agent logs
+def stock_information_specialist(symbol: str) -> str:
+    """Return current price + basic market info for a symbol."""
+    stock = input_agent(symbol)
+    price, price_conf = price_agent(stock)
+    response = f"The current stock price of {stock} is ${price:.2f} (source confidence: {price_conf})."
+    log_action("Stock Information Specialist", "respond", {"symbol": stock, "price": price, "confidence": price_conf})
+    return response
+
+def stock_calculation_specialist(buy_price: float, current_price: float, shares: int) -> str:
+    """Calculate potential profit/loss"""
+    pnl = (current_price - buy_price) * shares
+    pnl_str = f"You have a potential {'profit' if pnl>=0 else 'loss'} of ${abs(pnl):,.2f} on {shares} shares (Buy: ${buy_price:.2f}, Current: ${current_price:.2f})."
+    log_action("Stock Calculation Specialist", "pnl_calculated", {"buy": buy_price, "current": current_price, "shares": shares, "pnl": pnl})
+    return pnl_str
+
+# ------------------------
+# Conversation Router (Simple)
+# ------------------------
+def route_conversation(intent: str, payload: Dict[str, Any]) -> str:
+    """Route user intent to appropriate specialist or workflow"""
+    intent = intent.lower().strip()
+    if intent in ("info", "price", "quote"):
+        symbol = payload.get("symbol") or payload.get("stock") or "SBI"
+        return stock_information_specialist(symbol)
+    elif intent in ("pnl", "profit_loss", "calculate_pnl"):
+        buy = float(payload.get("buy_price", 0))
+        current = float(payload.get("current_price", 0))
+        shares = int(payload.get("shares", 0))
+        return stock_calculation_specialist(buy, current, shares)
+    elif intent in ("workflow", "full"):
+        stock_names = payload.get("stock_names", ["SBI"])
+        results, logs = run_workflow(stock_names)
+        return "\n\n".join(results)
+    else:
+        return "Sorry — I didn't understand the request. Use intent 'info' or 'pnl' or 'workflow'."
+
+# ------------------------
+# Workflow (ties agents together, same as before)
+# ------------------------
+def run_workflow(stock_names: List[str]=None) -> Tuple[List[str], List[Dict[str,Any]]]:
+    """Full multi-agent workflow: price + history + analysis + sentiment + prediction + report"""
+    if not stock_names:
+        stock_names = ["SBI"]
+
+    results, hist_list = [], []
+    for name in stock_names:
+        stock_name = input_agent(name)
+        price, price_conf = price_agent(stock_name)
+        hist = history_agent(stock_name)
+        analysis = analysis_agent(hist)
+        sentiment, headlines = sentiment_agent(stock_name)
