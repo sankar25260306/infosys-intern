@@ -1,229 +1,140 @@
-# Import Streamlit library for building web apps
-import streamlit as st  
+# Import Streamlit for UI components
+import streamlit as st
 
-# Import pandas for data manipulation and analysis
-import pandas as pd  
+# Import pandas for handling tabular data
+import pandas as pd
 
-# Import matplotlib for plotting charts
-import matplotlib.pyplot as plt  
+# Import datetime for working with dates if needed
+from datetime import datetime
 
-# Import random for fallback/random data generation
-import random  
-
-# Import BytesIO to handle in-memory image buffers
-from io import BytesIO  
-
-# Import FPDF for generating PDF reports
-from fpdf import FPDF  
-
-# Import tempfile and os for temporary file handling
-import tempfile, os  
-
-# Import workflow function and fallback CSV from another module
-from final_multi_agent_stock_with_sentiment import run_workflow, FALLBACK_CSV  
+# Import backend functions from your multi-agent stock assistant
+from multi_agent_stock_assistant import (
+    handle_query,       # Handles natural language queries
+    history_agent,      # Fetches historical stock data
+    analysis_agent,     # Performs technical analysis (SMA, RSI)
+    sentiment_agent,    # Performs sentiment analysis
+    prediction_agent,   # Generates Buy/Sell/Hold predictions
+    report_agent,       # Generates detailed stock report
+    comparison_agent    # Compares multiple stocks
+)
 
 # ------------------------
-# Page Config
+# Streamlit UI Setup
 # ------------------------
+st.set_page_config(
+    page_title="📊 Hybrid Multi-Agent Stock Assistant",  # Set the page title
+    layout="wide"                                      # Use wide layout
+)
 
-# Set Streamlit page title and layout
-st.set_page_config(page_title="📈 Multi-Agent Stock Analyzer", layout="wide")  
+# Main title for the app
+st.title("📈 Hybrid Multi-Agent Stock Assistant")
 
-# Display main title on the web app
-st.title("📊 Multi-Agent Stock Market Research & Advisory")  
-
-# ------------------------
-# Sidebar Input
-# ------------------------
-
-# Display a sidebar header
-st.sidebar.header("🔹 Input")  
-
-# Text input widget in sidebar for company names
-companies_input = st.sidebar.text_input(
-    "Enter company names (comma separated, e.g., SBI, TCS, INFY):"
-)  
-
-# Sidebar button to trigger analysis
-analyze_button = st.sidebar.button("Analyze")  
-
-# Markdown instruction text displayed on main page
-st.markdown(
-    "👈 Enter company names in the sidebar. "
-    "The system will provide reports, predictions, charts, and you can download a PDF."
-)  
+# Caption / disclaimer
+st.caption("⚠️ Educational prototype — not financial advice.")
 
 # ------------------------
-# Helper: Add chart from BytesIO to PDF
+# Sidebar Settings
 # ------------------------
+st.sidebar.header("🔧 Settings")  # Header in sidebar
 
-# Function to add a matplotlib chart image to PDF
-def add_chart_to_pdf(pdf, img_bytes, title):  
-    # Create temporary file for image
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:  
-        tmpfile.write(img_bytes.getvalue())  # Write bytes to temp file
-        tmp_path = tmpfile.name  # Get temp file path
+# Radio button to choose mode
+mode = st.sidebar.radio(
+    "Choose Mode",              # Label
+    ["Natural Language Query", "Guided Q&A"],  # Options
+    index=0                     # Default selection
+)
 
-    # Add chart title to PDF
-    pdf.set_font("Arial", 'B', 14)  
-    pdf.cell(0, 8, title, ln=True)  
+# Horizontal line separator
+st.sidebar.markdown("---")
 
-    # Insert image into PDF
-    pdf.image(tmp_path, w=180)  
-    pdf.ln(5)  # Add spacing
-
-    # Remove temporary file
-    os.remove(tmp_path)  
+# Sidebar footer / info
+st.sidebar.write("Built with 💙 using Streamlit + Alpha Vantage + LangChain")
 
 # ------------------------
-# Analysis & Visualization
+# Natural Language Query Mode
 # ------------------------
+if mode == "Natural Language Query":
+    st.subheader("💬 Ask in Natural Language")  # Section header
+    
+    # Input box for user's query
+    query = st.text_input(
+        "Type your query (e.g., 'What is the price of TCS?')"
+    )
 
-# Run analysis only if analyze button is pressed
-if analyze_button:  
-    # Check if input is empty
-    if not companies_input.strip():  
-        st.sidebar.warning("⚠️ Please enter at least one company name.")  # Show warning
-    else:  
-        # Split input by comma and clean whitespace
-        companies = [c.strip() for c in companies_input.split(",") if c.strip()]  
-
-        # Show spinner while workflow is running
-        with st.spinner("Running multi-agent analysis... ⏳"):  
-            # Run multi-agent workflow and get reports and logs
-            reports, logs = run_workflow(companies)  
-
-        st.success("✅ Analysis Complete!")  # Show success message
-
-        # Prepare PDF report
-        pdf = FPDF()  
-        pdf.set_auto_page_break(auto=True, margin=15)  # Auto page breaks
-
-        # Loop through each company
-        for i, company in enumerate(companies):  
-            # Display report header
-            st.subheader(f"📄 Report: {company.upper()}")  
-
-            # ------------------------
-            # Show Report Text
-            # ------------------------
-            st.code(reports[i], language="text")  # Show report as code block
-
-            # Highlight prediction from report
-            pred_line = [line for line in reports[i].splitlines() if "Prediction" in line]  
-            if pred_line:  
-                pred = pred_line[0].split(":")[1].strip()  # Extract prediction text
-                if "Buy" in pred:  
-                    st.success(pred)  # Green highlight for Buy
-                elif "Sell" in pred:  
-                    st.error(pred)  # Red highlight for Sell
-                else:  
-                    st.warning(pred)  # Yellow highlight for Hold
-
-            # ------------------------
-            # Historical Data
-            # ------------------------
-            try:  
-                # Try reading fallback CSV
-                df = pd.read_csv(FALLBACK_CSV)  
-                df["Date"] = pd.to_datetime(df["Date"])  # Convert Date column
-                df = df.sort_values("Date").tail(60)  # Use last 60 days
-            except Exception:  
-                # Random fallback data if CSV fails
-                df = pd.DataFrame({  
-                    "Date": pd.date_range(end=pd.Timestamp.today(), periods=30),  
-                    "Close": [random.randint(100, 2000) for _ in range(30)]  
-                })  
-
-            # Calculate SMA
-            df["SMA"] = df["Close"].rolling(window=5).mean()  
-            # Generate placeholder RSI
-            df["RSI"] = [random.uniform(30, 70) for _ in range(len(df))]  
-            # Generate placeholder Sentiment
-            df["Sentiment"] = [random.choice([1, 0, -1]) for _ in range(len(df))]  
-
-            # ------------------------
-            # Charts
-            # ------------------------
-            col1, col2, col3 = st.columns(3)  # Divide page into 3 columns
-
-            # Close + SMA Chart
-            with col1:  
-                st.markdown("**Close & SMA Chart**")  
-                fig, ax = plt.subplots(figsize=(5, 3))  
-                ax.plot(df["Date"], df["Close"], label="Close")  
-                ax.plot(df["Date"], df["SMA"], label="SMA", color="orange")  
-                ax.legend()  
-                ax.set_xticklabels(df["Date"].dt.strftime("%Y-%m-%d"), rotation=45)  
-                img_sma = BytesIO()  
-                fig.savefig(img_sma, format="png")  
-                img_sma.seek(0)  
-                st.pyplot(fig)  
-                plt.close(fig)  
-
-            # RSI Chart
-            with col2:  
-                st.markdown("**RSI Chart**")  
-                fig, ax = plt.subplots(figsize=(5, 3))  
-                ax.plot(df["Date"], df["RSI"], color="green")  
-                ax.axhline(70, color="red", linestyle="--")  # Overbought line
-                ax.axhline(30, color="red", linestyle="--")  # Oversold line
-                ax.set_xticklabels(df["Date"].dt.strftime("%Y-%m-%d"), rotation=45)  
-                img_rsi = BytesIO()  
-                fig.savefig(img_rsi, format="png")  
-                img_rsi.seek(0)  
-                st.pyplot(fig)  
-                plt.close(fig)  
-
-            # Sentiment Chart
-            with col3:  
-                st.markdown("**Sentiment Chart**")  
-                fig, ax = plt.subplots(figsize=(5, 3))  
-                ax.bar(  
-                    df["Date"],  
-                    df["Sentiment"],  
-                    color=["green" if x == 1 else "red" if x == -1 else "gray" for x in df["Sentiment"]]  
-                )  
-                ax.set_xticklabels(df["Date"].dt.strftime("%Y-%m-%d"), rotation=45)  
-                img_sent = BytesIO()  
-                fig.savefig(img_sent, format="png")  
-                img_sent.seek(0)  
-                st.pyplot(fig)  
-                plt.close(fig)  
-
-            # ------------------------
-            # Add to PDF
-            # ------------------------
-            pdf.add_page()  # Start new PDF page
-            pdf.set_font("Arial", 'B', 16)  # Title font
-            pdf.cell(0, 10, f"Report: {company.upper()}", ln=True)  # Add title
-            pdf.set_font("Arial", '', 12)  # Normal font
-            pdf.multi_cell(0, 8, reports[i])  # Add report text
-            pdf.ln(5)  # Add spacing
-
-            # Add charts to PDF
-            add_chart_to_pdf(pdf, img_sma, "Close & SMA Chart")  
-            add_chart_to_pdf(pdf, img_rsi, "RSI Chart")  
-            add_chart_to_pdf(pdf, img_sent, "Sentiment Chart")  
-
-        # ------------------------
-        # Download PDF Button
-        # ------------------------
-        pdf_bytes = pdf.output(dest="S").encode("latin1")  # Convert PDF to bytes
-        st.download_button(  
-            label="📥 Download Full Report as PDF",  
-            data=pdf_bytes,  
-            file_name="Stock_Analysis_Report.pdf",  
-            mime="application/pdf"  
-        )  
-
-        # ------------------------
-        # Show Logs
-        # ------------------------
-        st.subheader("📝 Agent Logs")  
-        st.dataframe(pd.DataFrame(logs))  # Display logs as table
+    # Run query button
+    if st.button("Run Query", type="primary"):
+        if query.strip():  # Ensure query is not empty
+            response = handle_query(query)  # Call backend to process query
+            st.write(response)  # Display response
+        else:
+            st.warning("Please enter a query.")  # Warning if empty
 
 # ------------------------
-# Footer
+# Guided Q&A Mode
 # ------------------------
-st.markdown("---\n👨‍💻 Designed by: **Sankar Pandi S** | Multi-Agent Stock Analyzer")  
+else:
+    st.subheader("🧭 Guided Q&A Mode")  # Section header
+
+    # Input box for stock symbol, default "TCS"
+    stock = st.text_input("Enter Stock Symbol", "TCS").upper().strip()  # Convert to uppercase and remove spaces
+
+    # Create 3 columns for buttons
+    col1, col2, col3 = st.columns(3)
+
+    # ------------------------ Column 1 ------------------------
+    with col1:
+        if st.button("💰 Current Price"):  # Button for price
+            st.write(handle_query(f"price {stock}"))  # Fetch and display price
+
+    # ------------------------ Column 2 ------------------------
+    with col2:
+        if st.button("📊 Technical Analysis"):  # Button for technicals
+            df = history_agent(stock)  # Get historical data
+            ta = analysis_agent(df)    # Compute SMA and RSI
+            st.write(f"**SMA(5):** {ta['SMA']:.2f}")  # Show SMA
+            st.write(f"**RSI:** {ta['RSI']:.2f}")     # Show RSI
+            st.line_chart(df.set_index("Date")["Close"])  # Plot closing price chart
+
+    # ------------------------ Column 3 ------------------------
+    with col3:
+        if st.button("📰 News & Sentiment"):  # Button for news
+            sentiment, headlines = sentiment_agent(stock)  # Get sentiment and headlines
+            st.write(f"**Sentiment:** {sentiment}")  # Show sentiment
+            for h in headlines:                      # List headlines
+                st.markdown(f"- {h}")
+
+    # ------------------------ Second Row: Prediction & Report ------------------------
+    c1, c2 = st.columns(2)
+
+    # Column 1: Prediction
+    with c1:
+        if st.button("🔮 Prediction"):  # Button for prediction
+            df = history_agent(stock)           # Get historical data
+            ta = analysis_agent(df)             # Compute technicals
+            sentiment, _ = sentiment_agent(stock)  # Get sentiment
+            last_price = df['Close'].iloc[-1] if not df.empty else 1000  # Last closing price
+            pred, conf = prediction_agent(ta, sentiment, last_price)     # Get prediction
+            st.write(f"Prediction for {stock}: **{pred}** (Confidence: {conf})")  # Display
+
+    # Column 2: Full Report
+    with c2:
+        if st.button("📑 Full Report"):  # Button for report
+            df = history_agent(stock)           # Historical data
+            ta = analysis_agent(df)             # Technical analysis
+            sentiment, headlines = sentiment_agent(stock)  # Sentiment
+            last_price = df['Close'].iloc[-1] if not df.empty else 1000  # Last price
+            pred, conf = prediction_agent(ta, sentiment, last_price)     # Prediction
+            report = report_agent(stock, last_price, ta, sentiment, headlines, pred, conf, df)  # Full report
+            st.text_area("Stock Report", report, height=300)  # Display in a scrollable text area
+
+    # ------------------------ Stock Comparison ------------------------
+    st.markdown("---")
+    st.subheader("📈 Compare Multiple Stocks")
+
+    # Input for multiple stock symbols separated by commas
+    stock_list = st.text_input("Enter symbols separated by commas", "TCS, INFY").upper().split(",")
+
+    if st.button("Compare Stocks"):  # Button to compare
+        dfs = [history_agent(s.strip()) for s in stock_list]  # Fetch historical data for all stocks
+        results = comparison_agent(stock_list, dfs)           # Get comparison results
+        st.dataframe(pd.DataFrame(results))                  # Display as table
