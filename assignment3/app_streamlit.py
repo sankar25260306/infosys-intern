@@ -8,7 +8,7 @@ import pandas as pd
 from datetime import datetime
 
 # Import backend functions from your multi-agent stock assistant
-from multi_agent_stock_assistant import (
+from multi_agent_stock_app import (
     handle_query,       # Handles natural language queries
     history_agent,      # Fetches historical stock data
     analysis_agent,     # Performs technical analysis (SMA, RSI)
@@ -138,3 +138,4 @@ else:
         dfs = [history_agent(s.strip()) for s in stock_list]  # Fetch historical data for all stocks
         results = comparison_agent(stock_list, dfs)           # Get comparison results
         st.dataframe(pd.DataFrame(results))                  # Display as table
+
